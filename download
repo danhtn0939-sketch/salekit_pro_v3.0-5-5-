@@ -1,0 +1,333 @@
+const express = require('express');
+const crypto  = require('crypto');
+const { q, one, all } = require('../../db');
+const { PLANS, getPlans } = require('../constants');
+
+// So sánh chuỗi bí mật theo kiểu timing-safe (chống dò mật khẩu bằng thời gian).
+function safeEqual(a, b) {
+  if (!a || !b) return false;
+  const ba = Buffer.from(String(a));
+  const bb = Buffer.from(String(b));
+  if (ba.length !== bb.length) return false;
+  return crypto.timingSafeEqual(ba, bb);
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────
+
+async function getPlatformBankConfig() {
+  const rows = await all(
+    "SELECT key,value FROM platform_config WHERE key IN ('bank_code','bank_account','bank_holder')"
+  );
+  const cfg = Object.fromEntries(rows.map(r => [r.key, r.value]));
+  return {
+    bank_code:   cfg.bank_code    || process.env.PLATFORM_BANK_CODE    || 'MB',
+    account_no:  cfg.bank_account || process.env.PLATFORM_BANK_ACCOUNT || '0123456789',
+    holder_name: cfg.bank_holder  || process.env.PLATFORM_BANK_HOLDER  || 'SALESKIT PRO',
+  };
+}
+
+function vietQRUrl(bankCode, accountNo, holderName, amount, content) {
+  const params = new URLSearchParams({ amount, addInfo: content, accountName: holderName });
+  return `https://img.vietqr.io/image/${bankCode}-${accountNo}-compact2.png?${params}`;
+}
+
+// Stripe config: ưu tiên DB (chủ app nhập qua giao diện), fallback về biến .env.
+async function getStripeConfig() {
+  const rows = await all(
+    "SELECT key,value FROM platform_config WHERE key IN ('stripe_secret_key','stripe_webhook_secret')"
+  );
+  const cfg = Object.fromEntries(rows.map(r => [r.key, r.value]));
+  return {
+    secretKey:     cfg.stripe_secret_key     || process.env.STRIPE_SECRET_KEY     || '',
+    webhookSecret: cfg.stripe_webhook_secret || process.env.STRIPE_WEBHOOK_SECRET || '',
+  };
+}
+
+// ── Router factory ────────────────────────────────────────────────────
+
+function register(app, { auth, adminOnly, emit }) {
+
+  // Danh sách gói (public) — đọc động từ DB (đã gồm giá sau giảm)
+  app.get('/api/billing/plans', async (req, res) => {
+    try { res.json(await getPlans()); }
+    catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // Thông tin gói + lịch sử đơn
+  app.get('/api/billing', auth, async (req, res) => {
+    try {
+      const [shop, orders, bankCfg, custCnt, prodCnt, ruleCnt] = await Promise.all([
+        one('SELECT * FROM shops WHERE id=$1', [req.shopId]),
+        all('SELECT * FROM billing WHERE shop_id=$1 ORDER BY created_at DESC LIMIT 20', [req.shopId]),
+        getPlatformBankConfig(),
+        one('SELECT COUNT(*) n FROM customers WHERE shop_id=$1', [req.shopId]),
+        one('SELECT COUNT(*) n FROM products  WHERE shop_id=$1', [req.shopId]),
+        one('SELECT COUNT(*) n FROM rules     WHERE shop_id=$1', [req.shopId]),
+      ]);
+      const activeBill = orders.find(o => o.status === 'active');
+      const stripeCfg  = await getStripeConfig();
+      const plans      = await getPlans();
+      res.json({
+        current_plan: shop.plan,
+        plan_info:    plans[shop.plan] || plans.free,
+        active_bill:  activeBill || null,
+        usage: { customers: +custCnt.n, products: +prodCnt.n, rules: +ruleCnt.n },
+        orders,
+        bank: { bank_code: bankCfg.bank_code, account_no: bankCfg.account_no, holder: bankCfg.holder_name },
+        stripe_enabled: !!stripeCfg.secretKey,
+      });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // Lưu bank config của shop
+  app.put('/api/billing/bank-config', auth, adminOnly, async (req, res) => {
+    try {
+      const { bank_code, account_no, holder_name } = req.body;
+      await q(
+        `INSERT INTO bank_config (shop_id, bank_code, account_no, holder_name)
+         VALUES ($1,$2,$3,$4)
+         ON CONFLICT(shop_id) DO UPDATE SET
+           bank_code=EXCLUDED.bank_code, account_no=EXCLUDED.account_no, holder_name=EXCLUDED.holder_name`,
+        [req.shopId, bank_code, account_no, holder_name]
+      );
+      res.json({ ok: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // Tạo đơn VietQR
+  app.post('/api/billing/create-order', auth, async (req, res) => {
+    try {
+      const { plan } = req.body;
+      const plans     = await getPlans();
+      if (!plans[plan] || plan === 'free')
+        return res.status(400).json({ error: 'Gói không hợp lệ' });
+
+      const planInfo  = plans[plan];
+      const amount    = planInfo.price_final;  // giá sau giảm (nếu có)
+      const ref       = 'SK' + Date.now().toString(36).toUpperCase();
+      const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+      const orderExp  = new Date(Date.now() + 30 * 60 * 1000);
+      const bankCfg   = await getPlatformBankConfig();
+      const content   = `SALESKIT ${req.shopId} ${ref}`;
+      const qrUrl     = vietQRUrl(bankCfg.bank_code, bankCfg.account_no, bankCfg.holder_name, amount, content);
+
+      await q(
+        `INSERT INTO billing (shop_id, plan, status, expires_at, payment_ref, amount)
+         VALUES ($1,$2,'pending',$3,$4,$5)`,
+        [req.shopId, plan, expiresAt, ref, amount]
+      );
+      res.json({
+        ref, plan,
+        amount,
+        qr_url:           qrUrl,
+        order_expires_at: orderExp,
+        bank: { bank_code: bankCfg.bank_code, account_no: bankCfg.account_no, holder: bankCfg.holder_name, content },
+      });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // Polling trạng thái đơn
+  app.get('/api/billing/order/:ref/status', auth, async (req, res) => {
+    try {
+      const bill = await one(
+        'SELECT status, paid_at, plan, amount, paid_amount FROM billing WHERE payment_ref=$1 AND shop_id=$2',
+        [req.params.ref, req.shopId]
+      );
+      if (!bill) return res.status(404).json({ error: 'Không tìm thấy đơn' });
+      res.json(bill);
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // Duyệt thủ công ĐÃ CHUYỂN cho chủ app (Super Admin) — shop KHÔNG tự duyệt được nữa.
+  // Đơn được kích hoạt tự động qua bank/Stripe webhook, hoặc do chủ app duyệt tay.
+  app.post('/api/billing/confirm', auth, adminOnly, async (req, res) => {
+    return res.status(403).json({
+      error: 'Đơn sẽ tự động kích hoạt sau khi thanh toán, hoặc được quản trị nền tảng duyệt. Vui lòng liên hệ hỗ trợ nếu đã thanh toán mà chưa lên gói.',
+    });
+  });
+
+  // Hủy đơn
+  app.post('/api/billing/cancel', auth, adminOnly, async (req, res) => {
+    try {
+      const { ref } = req.body;
+      await q(
+        "UPDATE billing SET status='cancelled' WHERE payment_ref=$1 AND shop_id=$2",
+        [ref, req.shopId]
+      );
+      res.json({ ok: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ── STRIPE ────────────────────────────────────────────────────────
+
+  app.post('/api/billing/stripe/create-session', auth, async (req, res) => {
+    try {
+      const { secretKey } = await getStripeConfig();
+      if (!secretKey)
+        return res.status(503).json({ error: 'Stripe chưa được cấu hình. Vui lòng liên hệ chủ ứng dụng.' });
+
+      const { plan } = req.body;
+      const plans    = await getPlans();
+      if (!plans[plan] || plan === 'free')
+        return res.status(400).json({ error: 'Gói không hợp lệ' });
+
+      const stripe   = require('stripe')(secretKey);
+      const planInfo = plans[plan];
+      const ref      = 'SK' + Date.now().toString(36).toUpperCase();
+      const origin   = req.headers.origin || `https://${req.headers.host}`;
+
+      await q(
+        `INSERT INTO billing (shop_id, plan, status, expires_at, payment_ref, amount)
+         VALUES ($1,$2,'pending',$3,$4,$5)`,
+        [req.shopId, plan, new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), ref, planInfo.price_final]
+      );
+
+      const session = await stripe.checkout.sessions.create({
+        payment_method_types: ['card'],
+        line_items: [{
+          price_data: {
+            currency:     'usd',
+            unit_amount:  planInfo.price_usd_final * 100,
+            product_data: { name: `SalesKit Pro — ${planInfo.label}`, description: '1 month subscription' },
+          },
+          quantity: 1,
+        }],
+        mode:        'payment',
+        metadata:    { ref, shop_id: req.shopId, plan },
+        success_url: `${origin}/app?billing=success&ref=${ref}`,
+        cancel_url:  `${origin}/app?billing=cancel`,
+      });
+
+      res.json({ url: session.url, ref });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // Stripe webhook — xác nhận tự động sau payment
+  app.post(
+    '/api/billing/stripe/webhook',
+    express.raw({ type: 'application/json' }),
+    async (req, res) => {
+      try {
+        const { secretKey, webhookSecret } = await getStripeConfig();
+        if (!secretKey) return res.sendStatus(400);
+        const stripe = require('stripe')(secretKey);
+
+        // BẮT BUỘC xác thực chữ ký — không còn fallback JSON.parse (chống giả mạo sự kiện).
+        if (!webhookSecret) {
+          console.error('[Stripe Webhook] Thiếu Webhook Secret — từ chối webhook');
+          return res.sendStatus(400);
+        }
+        let event;
+        try {
+          event = stripe.webhooks.constructEvent(
+            req.body,
+            req.headers['stripe-signature'],
+            webhookSecret
+          );
+        } catch (err) {
+          console.error('[Stripe Webhook] Chữ ký không hợp lệ:', err.message);
+          return res.sendStatus(400);
+        }
+
+        if (event.type === 'checkout.session.completed') {
+          const session           = event.data.object;
+          const { ref, shop_id, plan } = session.metadata;
+          const bill              = await one(
+            "SELECT * FROM billing WHERE payment_ref=$1 AND status='pending'", [ref]
+          );
+          if (bill) {
+            await q(
+              "UPDATE billing SET status='active', paid_at=NOW(), paid_amount=$1 WHERE payment_ref=$2",
+              [session.amount_total, ref]
+            );
+            await q('UPDATE shops SET plan=$1 WHERE id=$2', [plan, shop_id]);
+            await q('INSERT INTO activity_log (shop_id,actor,action,detail) VALUES ($1,$2,$3,$4)',
+              [shop_id, 'stripe_webhook', 'Thanh toán Stripe xác nhận', `Ref: ${ref} | Plan: ${plan}`]);
+            emit(shop_id, 'billing:paid', { ref, plan, amount: session.amount_total, method: 'stripe' });
+          }
+        }
+        res.json({ received: true });
+      } catch (e) {
+        console.error('[Stripe Webhook]', e.message);
+        res.status(400).json({ error: e.message });
+      }
+    }
+  );
+
+  // ── BANK WEBHOOK — SePay / Casso ─────────────────────────────────
+
+  app.post('/api/billing/webhook/bank', async (req, res) => {
+    try {
+      const incomingSecret = req.headers['x-api-key']
+        || req.headers['x-webhook-secret']
+        || req.query.secret || '';
+
+      const globalSecret = process.env.BANK_WEBHOOK_SECRET; // KHÔNG còn fallback mặc định cứng
+      let shopId = null;
+
+      // Phải khớp secret toàn cục (timing-safe) HOẶC secret riêng của 1 shop.
+      if (!safeEqual(incomingSecret, globalSecret)) {
+        if (!incomingSecret)
+          return res.status(403).json({ error: 'Invalid secret' });
+        const cfg = await one('SELECT shop_id FROM bank_config WHERE webhook_secret=$1', [incomingSecret]);
+        if (!cfg) return res.status(403).json({ error: 'Invalid secret' });
+        shopId = cfg.shop_id;
+      }
+
+      const body = req.body;
+      const transferIn = body.transferType === 'in'
+        || body.type === 'IN'
+        || body.type === 'CREDIT'
+        || (!body.transferType);
+
+      if (!transferIn) return res.json({ ok: false, msg: 'Not an incoming transfer' });
+
+      const content = [body.content, body.addInfo, body.description, body.transferContent, body.memo]
+        .filter(Boolean).join(' ');
+      const amount  = +(body.transferAmount || body.amount || body.value || 0);
+
+      const refMatch = content.match(/SK[A-Z0-9]{6,20}/i);
+      if (!refMatch) {
+        console.log('[Bank Webhook] No ref found in:', content);
+        return res.json({ ok: false, msg: 'No order ref in content', content });
+      }
+
+      const ref  = refMatch[0].toUpperCase();
+      const bill = await one(
+        shopId
+          ? "SELECT * FROM billing WHERE payment_ref=$1 AND shop_id=$2 AND status='pending'"
+          : "SELECT * FROM billing WHERE payment_ref=$1 AND status='pending'",
+        shopId ? [ref, shopId] : [ref]
+      );
+
+      if (!bill) {
+        console.log('[Bank Webhook] Order not found or already paid:', ref);
+        return res.json({ ok: false, msg: 'Order not found or already processed', ref });
+      }
+
+      if (amount > 0 && Math.abs(amount - bill.amount) > 1000) {
+        console.log(`[Bank Webhook] Amount mismatch: received ${amount}, expected ${bill.amount}`);
+        return res.json({ ok: false, msg: 'Amount mismatch', received: amount, expected: bill.amount, ref });
+      }
+
+      await q(
+        "UPDATE billing SET status='active', paid_at=NOW(), paid_amount=$1, webhook_raw=$2 WHERE payment_ref=$3",
+        [amount || bill.amount, JSON.stringify(body), ref]
+      );
+      await q('UPDATE shops SET plan=$1 WHERE id=$2', [bill.plan, bill.shop_id]);
+      await q('INSERT INTO activity_log (shop_id, actor, action, detail) VALUES ($1,$2,$3,$4)',
+        [bill.shop_id, 'bank_webhook', 'Thanh toán tự động xác nhận', `Ref: ${ref} | Amount: ${amount}`]);
+
+      emit(bill.shop_id, 'billing:paid', { ref, plan: bill.plan, amount: amount || bill.amount, auto: true });
+      console.log(`[Bank Webhook] ✅ Confirmed: ${ref} | Shop: ${bill.shop_id} | Plan: ${bill.plan}`);
+      res.json({ ok: true, ref, plan: bill.plan, shop_id: bill.shop_id });
+
+    } catch (e) {
+      console.error('[Bank Webhook] Error:', e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+}
+
+register.getPlatformBankConfig = getPlatformBankConfig;
+module.exports = register;

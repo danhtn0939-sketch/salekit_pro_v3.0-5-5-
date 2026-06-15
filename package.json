@@ -1,0 +1,34 @@
+{
+  "name": "saleskit-backend",
+  "version": "3.1.1",
+  "description": "SalesKit Pro — Backend đa shop (multi-tenant) cho chatbot tư vấn bán hàng",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "init": "node init-db.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "express-rate-limit": "^8.5.2",
+    "jsonwebtoken": "^9.0.2",
+    "node-fetch": "^3.3.2",
+    "openai": "^6.39.1",
+    "pg": "^8.21.0",
+    "socket.io": "^4.8.3",
+    "stripe": "^22.2.0"
+  },
+  "optionalDependencies": {
+    "@aws-sdk/client-s3": "^3.600.0",
+    "@socket.io/redis-adapter": "^8.3.0",
+    "redis": "^4.7.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "private": true,
+  "license": "UNLICENSED"
+}

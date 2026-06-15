@@ -1,0 +1,11 @@
+node_modules
+.env
+uploads
+logs
+*.log
+logsserver.log
+.git
+.github
+*.test.js
+load-test.js
+sales-kit

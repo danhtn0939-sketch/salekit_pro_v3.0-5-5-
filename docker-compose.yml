@@ -1,0 +1,362 @@
+const jwt    = require('jsonwebtoken');
+const crypto = require('crypto');
+const bcrypt = require('bcryptjs');               // Fix #2 — hỗ trợ hash mật khẩu super admin
+const { q, one, all, initSchema } = require('../../db');
+const { getPlatformBankConfig }   = require('./billing');
+const { detectProvider, modelForProvider } = require('../../ai');
+const monitor = require('../monitor');
+
+module.exports = function register(app, { superAuth, emit, superGuard, registerLimiter }) {
+  const SUPER_USER      = process.env.SUPER_ADMIN_USER;
+  const SUPER_PASS      = process.env.SUPER_ADMIN_PASS;
+  const SUPER_PASS_HASH = process.env.SUPER_ADMIN_PASS_HASH; // Fix #2: ưu tiên hash bcrypt nếu có
+
+  // So sánh chuỗi hằng-thời-gian (chống dò theo thời gian phản hồi).
+  function safeEqual(a, b) {
+    const ba = Buffer.from(String(a ?? ''));
+    const bb = Buffer.from(String(b ?? ''));
+    if (ba.length !== bb.length) return false;
+    return crypto.timingSafeEqual(ba, bb);
+  }
+
+  // Kiểm mật khẩu super admin: ưu tiên SUPER_ADMIN_PASS_HASH (bcrypt), fallback so timing-safe.
+  function checkSuperPass(password) {
+    if (SUPER_PASS_HASH) { try { return bcrypt.compareSync(password || '', SUPER_PASS_HASH); } catch { return false; } }
+    return safeEqual(password, SUPER_PASS);
+  }
+
+  // Super admin login — bộ đếm khoá RIÊNG (5 sai → 1 phút, lặp lại), không dính bên khách
+  app.post('/api/super/login', superGuard.middleware, (req, res) => {
+    const { username, password } = req.body;
+    // Fix #2: so sánh timing-safe cho cả user lẫn pass (không dùng !== để tránh lộ thời gian).
+    if (!safeEqual(username, SUPER_USER) || !checkSuperPass(password)) {
+      superGuard.fail(req);
+      return res.status(401).json({ error: 'Sai thông tin đăng nhập' });
+    }
+    superGuard.success(req);
+    const token = jwt.sign({ role: 'superadmin' }, process.env.JWT_SECRET, { expiresIn: '7d' });
+    res.json({ token });
+  });
+
+  // Tổng quan platform
+  app.get('/api/super/dashboard', superAuth, async (req, res) => {
+    try {
+      const [shops, revenue, activeSubs, newMonth] = await Promise.all([
+        one('SELECT COUNT(*) n FROM shops'),
+        one("SELECT COALESCE(SUM(paid_amount),0) total FROM billing WHERE status='active'"),
+        one("SELECT COUNT(*) n FROM billing WHERE status='active'"),
+        one("SELECT COUNT(*) n FROM shops WHERE created_at >= NOW() - INTERVAL '30 days'"),
+      ]);
+      res.json({
+        total_shops:    +shops.n,
+        total_revenue:  +revenue.total,
+        active_subs:    +activeSubs.n,
+        new_this_month: +newMonth.n,
+      });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // Danh sách shops
+  app.get('/api/super/shops', superAuth, async (req, res) => {
+    try {
+      const shopList = await all('SELECT * FROM shops ORDER BY created_at DESC');
+      for (const s of shopList) {
+        const [custs, msgs, bill, users] = await Promise.all([
+          one('SELECT COUNT(*) n FROM customers WHERE shop_id=$1', [s.id]),
+          one('SELECT COUNT(*) n FROM messages WHERE shop_id=$1', [s.id]),
+          one("SELECT plan,expires_at,paid_amount FROM billing WHERE shop_id=$1 AND status='active' ORDER BY created_at DESC LIMIT 1", [s.id]),
+          one('SELECT COUNT(*) n FROM users WHERE shop_id=$1', [s.id]),
+        ]);
+        s.customer_count = +custs.n;
+        s.message_count  = +msgs.n;
+        s.user_count     = +users.n;
+        s.active_bill    = bill || null;
+      }
+      res.json(shopList);
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // Tạo shop mới (super admin)
+  app.post('/api/super/shops', superAuth, async (req, res) => {
+    try {
+      const { shopName, adminUser, adminPass, plan } = req.body;
+      if (!shopName || !adminUser || !adminPass)
+        return res.status(400).json({ error: 'Thiếu thông tin' });
+      const { createShop } = require('../../init-db');
+      const base   = shopName.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/[^a-z0-9]/g,'-').replace(/-+/g,'-').replace(/^-|-$/g,'').slice(0,20);
+      const shopId = base + '-' + crypto.randomBytes(4).toString('hex');
+      await initSchema();
+      const result = await createShop({ shopId, shopName, adminUser, adminPass, plan: plan || 'free', seed: false });
+      if (!result) return res.status(409).json({ error: 'Không thể tạo shop' });
+      res.json(result);
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // Xóa shop
+  app.delete('/api/super/shops/:id', superAuth, async (req, res) => {
+    try {
+      await q('DELETE FROM shops WHERE id=$1', [req.params.id]);
+      res.json({ ok: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // Impersonate shop
+  app.post('/api/super/impersonate/:shopId', superAuth, async (req, res) => {
+    try {
+      const admin = await one(
+        "SELECT id FROM users WHERE shop_id=$1 AND role='admin' LIMIT 1",
+        [req.params.shopId]
+      );
+      if (!admin) return res.status(404).json({ error: 'Shop không tồn tại' });
+      const shop  = await one('SELECT * FROM shops WHERE id=$1', [req.params.shopId]);
+      const token = jwt.sign(
+        { shopId: req.params.shopId, userId: admin.id, role: 'admin' },
+        process.env.JWT_SECRET,
+        { expiresIn: '8h' }
+      );
+      res.json({ token, shop });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // Bank config platform
+  app.get('/api/super/bank-config', superAuth, async (req, res) => {
+    try { res.json(await getPlatformBankConfig()); }
+    catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.put('/api/super/bank-config', superAuth, async (req, res) => {
+    try {
+      const { bank_code, bank_account, bank_holder } = req.body;
+      if (!bank_account || !bank_holder)
+        return res.status(400).json({ error: 'Thiếu số TK hoặc tên chủ TK' });
+      for (const [k, v] of [['bank_code', bank_code || 'MB'], ['bank_account', bank_account], ['bank_holder', bank_holder]])
+        await q('INSERT INTO platform_config (key,value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=$2', [k, v]);
+      res.json({ ok: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // Thông tin liên hệ platform (public — tenant dùng trong Settings)
+  app.get('/api/platform-contact', async (req, res) => {
+    try {
+      const rows = await all(
+        "SELECT key,value FROM platform_config WHERE key IN ('contact_email','contact_phone','contact_note','contact_telegram','contact_whatsapp')"
+      );
+      const cfg = Object.fromEntries(rows.map(r => [r.key, r.value]));
+      res.json({
+        email: cfg.contact_email || '', phone: cfg.contact_phone || '', note: cfg.contact_note || '',
+        telegram: cfg.contact_telegram || '', whatsapp: cfg.contact_whatsapp || '',
+      });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.put('/api/super/platform-contact', superAuth, async (req, res) => {
+    try {
+      const { email, phone, note, telegram, whatsapp } = req.body;
+      const pairs = [
+        ['contact_email', email || ''], ['contact_phone', phone || ''], ['contact_note', note || ''],
+        ['contact_telegram', telegram || ''], ['contact_whatsapp', whatsapp || ''],
+      ];
+      for (const [k, v] of pairs)
+        await q('INSERT INTO platform_config (key,value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=$2', [k, v]);
+      res.json({ ok: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ── PHƯƠNG THỨC THANH TOÁN QUỐC TẾ (platform owner cấu hình) ──────────
+  // Stripe / PayPal / Wise / Visa-Card. Tenant chỉ XEM + SAO CHÉP, không sửa.
+  const PAY_KEYS = ['pay_stripe', 'pay_paypal', 'pay_wise', 'pay_visa'];
+  const readPayments = async () => {
+    const rows = await all('SELECT key,value FROM platform_config WHERE key = ANY($1)', [PAY_KEYS]);
+    const cfg = Object.fromEntries(rows.map(r => [r.key, r.value]));
+    return {
+      stripe: cfg.pay_stripe || '', paypal: cfg.pay_paypal || '',
+      wise:   cfg.pay_wise   || '', visa:   cfg.pay_visa   || '',
+    };
+  };
+
+  // Public — tenant xem trong trang Billing
+  app.get('/api/platform-payments', async (req, res) => {
+    try { res.json(await readPayments()); }
+    catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // Super admin đọc để hiển thị trong form
+  app.get('/api/super/payment-methods', superAuth, async (req, res) => {
+    try { res.json(await readPayments()); }
+    catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // Super admin lưu
+  app.put('/api/super/payment-methods', superAuth, async (req, res) => {
+    try {
+      const { stripe, paypal, wise, visa } = req.body;
+      const pairs = [
+        ['pay_stripe', stripe || ''], ['pay_paypal', paypal || ''],
+        ['pay_wise', wise || ''], ['pay_visa', visa || ''],
+      ];
+      for (const [k, v] of pairs)
+        await q('INSERT INTO platform_config (key,value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=$2', [k, v]);
+      res.json({ ok: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ── STRIPE CHECKOUT (tự động) — chủ app nhập key qua giao diện ────────
+  app.get('/api/super/stripe-config', superAuth, async (req, res) => {
+    try {
+      const rows = await all("SELECT key,value FROM platform_config WHERE key IN ('stripe_secret_key','stripe_webhook_secret')");
+      const cfg  = Object.fromEntries(rows.map(r => [r.key, r.value]));
+      const sk = cfg.stripe_secret_key || '';
+      const wh = cfg.stripe_webhook_secret || '';
+      res.json({
+        secret_key:     sk ? '••••••••' + sk.slice(-4) : '',
+        webhook_secret: wh ? '••••••••' + wh.slice(-4) : '',
+        has_key:     !!sk,
+        has_webhook: !!wh,
+        env_fallback: !!process.env.STRIPE_SECRET_KEY, // có key sẵn trong .env không
+      });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.put('/api/super/stripe-config', superAuth, async (req, res) => {
+    try {
+      const { secret_key, webhook_secret } = req.body;
+      // Giữ key cũ nếu ô vẫn là giá trị đã mask (••••); để TRỐNG hẳn = xoá key.
+      const setKey = async (k, incoming) => {
+        let v = incoming || '';
+        if (/^•+/.test(v)) {
+          const ex = await one('SELECT value FROM platform_config WHERE key=$1', [k]);
+          v = ex?.value || '';
+        }
+        await q('INSERT INTO platform_config (key,value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=$2', [k, v]);
+      };
+      await setKey('stripe_secret_key', secret_key);
+      await setKey('stripe_webhook_secret', webhook_secret);
+      res.json({ ok: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ── DUYỆT ĐƠN THANH TOÁN (chỉ chủ app) ───────────────────────────────
+  // Danh sách đơn — mặc định đơn đang chờ duyệt (?status=pending|active|all)
+  app.get('/api/super/orders', superAuth, async (req, res) => {
+    try {
+      const status = req.query.status || 'pending';
+      const rows = status === 'all'
+        ? await all(`SELECT b.*, s.name AS shop_name FROM billing b
+                     JOIN shops s ON s.id=b.shop_id ORDER BY b.created_at DESC LIMIT 100`)
+        : await all(`SELECT b.*, s.name AS shop_name FROM billing b
+                     JOIN shops s ON s.id=b.shop_id WHERE b.status=$1
+                     ORDER BY b.created_at DESC LIMIT 100`, [status]);
+      res.json(rows);
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // Chủ app DUYỆT đơn (sau khi đã thực nhận tiền)
+  app.post('/api/super/orders/:ref/approve', superAuth, async (req, res) => {
+    try {
+      const bill = await one('SELECT * FROM billing WHERE payment_ref=$1', [req.params.ref]);
+      if (!bill) return res.status(404).json({ error: 'Không tìm thấy đơn' });
+      if (bill.status === 'active') return res.json({ ok: true, already: true });
+      await q("UPDATE billing SET status='active', paid_at=NOW(), paid_amount=$1 WHERE payment_ref=$2",
+        [bill.amount, bill.payment_ref]);
+      await q('UPDATE shops SET plan=$1 WHERE id=$2', [bill.plan, bill.shop_id]);
+      await q('INSERT INTO activity_log (shop_id, actor, action, detail) VALUES ($1,$2,$3,$4)',
+        [bill.shop_id, 'super_admin', 'Duyệt thanh toán (chủ app)', `Ref: ${bill.payment_ref} | Plan: ${bill.plan}`]);
+      emit(bill.shop_id, 'billing:paid', { ref: bill.payment_ref, plan: bill.plan, amount: bill.amount, by: 'super' });
+      res.json({ ok: true, plan: bill.plan, shop_id: bill.shop_id });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // Chủ app TỪ CHỐI / huỷ đơn
+  app.post('/api/super/orders/:ref/reject', superAuth, async (req, res) => {
+    try {
+      await q("UPDATE billing SET status='cancelled' WHERE payment_ref=$1", [req.params.ref]);
+      res.json({ ok: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ── TRỢ LÝ AI HƯỚNG DẪN (Copilot) — chủ app cấu hình key 1 lần ────────
+  app.get('/api/super/copilot-config', superAuth, async (req, res) => {
+    try {
+      const rows = await all("SELECT key,value FROM platform_config WHERE key IN ('copilot_provider','copilot_api_key','copilot_model')");
+      const cfg  = Object.fromEntries(rows.map(r => [r.key, r.value]));
+      const ak = cfg.copilot_api_key || '';
+      res.json({
+        provider: cfg.copilot_provider || 'openai',
+        model:    cfg.copilot_model || 'gpt-4o-mini',
+        api_key:  ak ? '••••••••' + ak.slice(-4) : '',
+        has_key:  !!ak,
+        env_fallback: !!(process.env.COPILOT_API_KEY || process.env.OPENAI_API_KEY),
+      });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.put('/api/super/copilot-config', superAuth, async (req, res) => {
+    try {
+      const { provider, model, api_key } = req.body;
+      // Giữ key cũ nếu ô vẫn là giá trị mask (••••); để trống hẳn = xoá.
+      let keyVal = api_key || '';
+      if (/^•+/.test(keyVal)) {
+        const ex = await one("SELECT value FROM platform_config WHERE key='copilot_api_key'");
+        keyVal = ex?.value || '';
+      }
+      // Tự nhận diện nhà cung cấp theo đầu key (AIza→gemini, sk-→openai).
+      const finalProvider = detectProvider(keyVal) || provider || 'openai';
+      const finalModel    = modelForProvider(finalProvider, model);
+      const pairs = [
+        ['copilot_provider', finalProvider],
+        ['copilot_model',    finalModel],
+        ['copilot_api_key',  keyVal],
+      ];
+      for (const [k, v] of pairs)
+        await q('INSERT INTO platform_config (key,value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=$2', [k, v]);
+      res.json({ ok: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ── GIÁM SÁT HỆ THỐNG REALTIME (số liệu thật server/DB + dự báo 10') ──
+  app.get('/api/super/monitor', superAuth, (req, res) => {
+    try { res.json(monitor.snapshot()); }
+    catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ── QUẢN LÝ GÓI & GIÁ (chủ app chỉnh giá / hạn mức / giảm giá) ─────────
+  app.get('/api/super/plans', superAuth, async (req, res) => {
+    try { res.json(await all('SELECT * FROM plans ORDER BY sort_order, price')); }
+    catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.put('/api/super/plans', superAuth, async (req, res) => {
+    try {
+      const items = Array.isArray(req.body.plans) ? req.body.plans : [];
+      for (const p of items) {
+        if (!p.id) continue;
+        await q(
+          `UPDATE plans SET label=$2, price=$3, price_usd=$4, customers=$5, products=$6, rules=$7, discount_pct=$8 WHERE id=$1`,
+          [p.id, p.label || p.id,
+           Math.max(0, Math.round(+p.price || 0)),
+           Math.max(0, Math.round(+p.price_usd || 0)),
+           Number.isFinite(+p.customers) ? Math.trunc(+p.customers) : 0,
+           Number.isFinite(+p.products)  ? Math.trunc(+p.products)  : 0,
+           Number.isFinite(+p.rules)     ? Math.trunc(+p.rules)     : 0,
+           Math.max(0, Math.min(100, Math.round(+p.discount_pct || 0)))]
+        );
+      }
+      res.json({ ok: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // Self-service đăng ký shop mới
+  app.post('/api/shops/register', registerLimiter, async (req, res) => {
+    try {
+      const { shopName, username, password } = req.body;
+      if (!shopName || !username || !password) return res.status(400).json({ error: 'Thiếu thông tin' });
+      if (password.length < 6) return res.status(400).json({ error: 'Mật khẩu phải từ 6 ký tự' });
+      const { createShop } = require('../../init-db');
+      const base   = shopName.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/[^a-z0-9]/g,'-').replace(/-+/g,'-').replace(/^-|-$/g,'').slice(0,20);
+      const shopId = base + '-' + crypto.randomBytes(4).toString('hex');
+      const result = await createShop({ shopId, shopName, adminUser: username, adminPass: password, plan: 'free', seed: false });
+      if (!result) return res.status(409).json({ error: 'Không thể tạo shop, thử lại' });
+      res.json({ ok: true, shopId, shopName, username });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+};

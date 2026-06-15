@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SalesKit Pro — Chatbot bán hàng thông minh</title>
+<meta name="description" content="Quản lý khách hàng, tự động trả lời tin nhắn, tích hợp Facebook & Zalo. Tất cả trong 1 dashboard cho shop của bạn.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#070710;--s1:#0e0e1c;--s2:#161628;--s3:#1e1e35;
+  --border:#2a2a45;--border2:#3a3a5a;
+  --cyan:#00e5ff;--purple:#7c3aed;--pink:#f472b6;--green:#10b981;--amber:#f59e0b;
+  --text:#f0f0ff;--muted:#6b6b9a;--dim:#2a2a45;
+  --head:'Syne',sans-serif;--body:'DM Sans',sans-serif;
+}
+html{scroll-behavior:smooth}
+body{font-family:var(--body);background:var(--bg);color:var(--text);overflow-x:hidden}
+
+/* ── NAV ── */
+nav{position:fixed;top:0;left:0;right:0;z-index:100;background:rgba(7,7,16,.85);backdrop-filter:blur(12px);border-bottom:1px solid var(--border);padding:0 5vw}
+.nav-inner{max-width:1160px;margin:0 auto;display:flex;align-items:center;justify-content:space-between;height:62px}
+.nav-logo{font-family:var(--head);font-size:20px;font-weight:800;display:flex;align-items:center;gap:8px;text-decoration:none;color:var(--text)}
+.nav-logo .dot{width:8px;height:8px;border-radius:50%;background:var(--cyan);box-shadow:0 0 10px var(--cyan)}
+.nav-links{display:flex;align-items:center;gap:28px}
+.nav-links a{color:var(--muted);text-decoration:none;font-size:14px;transition:color .2s}
+.nav-links a:hover{color:var(--text)}
+.nav-cta{display:flex;gap:10px;align-items:center}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:9px 20px;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;border:none;transition:all .2s;text-decoration:none;font-family:var(--body)}
+.btn-outline{background:transparent;border:1px solid var(--border2);color:var(--muted)}
+.btn-outline:hover{border-color:var(--cyan);color:var(--cyan)}
+.btn-primary{background:var(--cyan);color:#070710}
+.btn-primary:hover{background:#33eeff;transform:translateY(-1px);box-shadow:0 4px 20px rgba(0,229,255,.3)}
+.btn-lg{padding:13px 28px;font-size:15px;border-radius:10px}
+.btn-ghost{background:rgba(255,255,255,.06);color:var(--text);border:1px solid var(--border)}
+.btn-ghost:hover{background:rgba(255,255,255,.1)}
+
+/* ── HERO ── */
+.hero{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:100px 5vw 60px;position:relative;overflow:hidden}
+.hero::before{content:'';position:absolute;top:-200px;left:50%;transform:translateX(-50%);width:800px;height:800px;background:radial-gradient(circle,rgba(124,58,237,.15) 0%,transparent 65%);pointer-events:none}
+.hero::after{content:'';position:absolute;bottom:-100px;right:-100px;width:500px;height:500px;background:radial-gradient(circle,rgba(0,229,255,.08) 0%,transparent 65%);pointer-events:none}
+.hero-inner{max-width:800px;text-align:center;position:relative;z-index:1}
+.hero-badge{display:inline-flex;align-items:center;gap:6px;background:rgba(124,58,237,.15);border:1px solid rgba(124,58,237,.3);border-radius:20px;padding:5px 14px;font-size:12px;color:#c084fc;font-weight:600;margin-bottom:24px}
+.hero-badge .dot{width:6px;height:6px;border-radius:50%;background:#c084fc;animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+h1{font-family:var(--head);font-size:clamp(36px,6vw,64px);font-weight:800;line-height:1.1;margin-bottom:20px;letter-spacing:-1.5px}
+h1 .cyan{color:var(--cyan)}
+h1 .purple{color:#a78bfa}
+.hero-sub{font-size:clamp(16px,2vw,20px);color:var(--muted);line-height:1.7;margin-bottom:36px;max-width:620px;margin-left:auto;margin-right:auto}
+.hero-cta{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-bottom:48px}
+.hero-trust{display:flex;align-items:center;justify-content:center;gap:20px;color:var(--muted);font-size:12.5px;flex-wrap:wrap}
+.hero-trust span{display:flex;align-items:center;gap:5px}
+
+/* ── DASHBOARD PREVIEW ── */
+.preview-wrap{margin-top:56px;position:relative}
+.preview-glow{position:absolute;inset:-1px;border-radius:16px;background:linear-gradient(135deg,rgba(124,58,237,.4),rgba(0,229,255,.3));z-index:-1;filter:blur(1px)}
+.preview-box{background:var(--s1);border:1px solid var(--border);border-radius:14px;overflow:hidden}
+.preview-bar{background:var(--s2);border-bottom:1px solid var(--border);padding:10px 16px;display:flex;align-items:center;gap:6px}
+.preview-dot{width:10px;height:10px;border-radius:50%}
+.preview-url{background:var(--s3);border-radius:6px;padding:4px 12px;font-size:11px;color:var(--muted);font-family:monospace;margin-left:8px}
+.preview-screen{background:var(--bg);padding:16px;display:grid;grid-template-columns:200px 1fr;gap:12px;min-height:280px}
+.preview-sidebar{background:var(--s1);border-radius:10px;border:1px solid var(--border);padding:14px}
+.preview-nav-item{height:26px;border-radius:6px;margin-bottom:6px;background:var(--s2)}
+.preview-nav-item.active{background:rgba(0,229,255,.1);border:1px solid rgba(0,229,255,.2)}
+.preview-content{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:10px;align-content:start}
+.preview-stat{background:var(--s1);border:1px solid var(--border);border-radius:10px;padding:14px;height:80px}
+.preview-stat .n{font-family:var(--head);font-size:24px;font-weight:800;margin-bottom:4px}
+.preview-stat .l{font-size:10px;color:var(--muted)}
+.preview-chart{grid-column:1/-1;background:var(--s1);border:1px solid var(--border);border-radius:10px;padding:14px;height:100px;display:flex;align-items:flex-end;gap:6px}
+.bar{background:rgba(0,229,255,.3);border-radius:3px 3px 0 0;flex:1;border:1px solid rgba(0,229,255,.2)}
+
+/* ── SECTION SHARED ── */
+section{padding:80px 5vw}
+.section-inner{max-width:1160px;margin:0 auto}
+.section-badge{display:inline-block;background:rgba(0,229,255,.08);border:1px solid rgba(0,229,255,.2);border-radius:20px;padding:4px 14px;font-size:11px;color:var(--cyan);font-weight:700;letter-spacing:1px;text-transform:uppercase;margin-bottom:14px}
+.section-title{font-family:var(--head);font-size:clamp(28px,4vw,42px);font-weight:800;letter-spacing:-1px;margin-bottom:14px}
+.section-sub{color:var(--muted);font-size:16px;line-height:1.7;max-width:580px}
+
+/* ── FEATURES ── */
+.features-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:20px;margin-top:48px}
+.feat-card{background:var(--s1);border:1px solid var(--border);border-radius:16px;padding:28px;transition:border-color .2s,transform .2s}
+.feat-card:hover{border-color:var(--border2);transform:translateY(-4px)}
+.feat-icon{width:48px;height:48px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:22px;margin-bottom:18px}
+.feat-title{font-family:var(--head);font-size:17px;font-weight:700;margin-bottom:8px}
+.feat-desc{color:var(--muted);font-size:14px;line-height:1.7}
+
+/* ── HOW IT WORKS ── */
+.steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:0;margin-top:48px;position:relative}
+.steps::before{content:'';position:absolute;top:36px;left:12%;right:12%;height:1px;background:linear-gradient(90deg,transparent,var(--border),transparent)}
+.step{text-align:center;padding:0 24px;position:relative;z-index:1}
+.step-num{width:72px;height:72px;border-radius:50%;background:var(--s2);border:2px solid var(--border);display:flex;align-items:center;justify-content:center;font-family:var(--head);font-size:22px;font-weight:800;margin:0 auto 20px;transition:border-color .3s}
+.step:hover .step-num{border-color:var(--cyan)}
+.step-title{font-family:var(--head);font-size:16px;font-weight:700;margin-bottom:8px}
+.step-desc{color:var(--muted);font-size:13.5px;line-height:1.6}
+
+/* ── PRICING ── */
+.pricing-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:18px;margin-top:48px}
+.price-card{background:var(--s1);border:1px solid var(--border);border-radius:16px;padding:28px;position:relative;transition:transform .2s}
+.price-card:hover{transform:translateY(-4px)}
+.price-card.popular{border-color:var(--purple);background:rgba(124,58,237,.06)}
+.price-popular-badge{position:absolute;top:-12px;left:50%;transform:translateX(-50%);background:var(--purple);color:#fff;font-size:10px;font-weight:700;padding:3px 14px;border-radius:20px;white-space:nowrap}
+.price-name{font-family:var(--head);font-size:18px;font-weight:800;margin-bottom:6px}
+.price-amount{font-family:var(--head);font-size:32px;font-weight:800;color:var(--cyan);margin-bottom:4px}
+.price-amount span{font-size:14px;color:var(--muted);font-weight:400}
+.price-per{font-size:12px;color:var(--muted);margin-bottom:20px}
+.price-features{list-style:none;margin-bottom:24px}
+.price-features li{font-size:13px;color:var(--muted);padding:5px 0;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px}
+.price-features li::before{content:'✓';color:var(--green);font-weight:700;flex-shrink:0}
+.price-card .btn{width:100%;justify-content:center}
+
+/* ── TESTIMONIALS ── */
+.testimonials-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:18px;margin-top:48px}
+.testi-card{background:var(--s1);border:1px solid var(--border);border-radius:14px;padding:24px}
+.testi-stars{color:var(--amber);font-size:14px;margin-bottom:12px}
+.testi-text{font-size:14px;color:var(--muted);line-height:1.7;margin-bottom:16px;font-style:italic}
+.testi-author{display:flex;align-items:center;gap:10px}
+.testi-av{width:36px;height:36px;border-radius:50%;background:linear-gradient(135deg,var(--purple),var(--cyan));display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;color:#fff;flex-shrink:0}
+.testi-name{font-size:13px;font-weight:600}
+.testi-shop{font-size:11px;color:var(--muted)}
+
+/* ── CTA SECTION ── */
+.cta-section{padding:80px 5vw;text-align:center;background:linear-gradient(135deg,rgba(124,58,237,.08),rgba(0,229,255,.04));border-top:1px solid var(--border);border-bottom:1px solid var(--border)}
+.cta-title{font-family:var(--head);font-size:clamp(28px,4vw,44px);font-weight:800;margin-bottom:14px;letter-spacing:-1px}
+.cta-sub{color:var(--muted);font-size:16px;margin-bottom:32px}
+.cta-btns{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
+
+/* ── FOOTER ── */
+footer{padding:40px 5vw;border-top:1px solid var(--border)}
+.footer-inner{max-width:1160px;margin:0 auto;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:16px}
+.footer-logo{font-family:var(--head);font-size:18px;font-weight:800}
+.footer-links{display:flex;gap:20px}
+.footer-links a{color:var(--muted);text-decoration:none;font-size:13px;transition:color .2s}
+.footer-links a:hover{color:var(--text)}
+.footer-copy{color:var(--dim);font-size:12px}
+
+/* ── RESPONSIVE ── */
+@media(max-width:768px){
+  .nav-links{display:none}
+  .preview-screen{grid-template-columns:1fr}
+  .preview-sidebar{display:none}
+  .steps::before{display:none}
+  .footer-inner{flex-direction:column;text-align:center}
+}
+</style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav>
+  <div class="nav-inner">
+    <a href="/" class="nav-logo"><div class="dot"></div>SalesKit Pro</a>
+    <div class="nav-links">
+      <a href="#features">Tính năng</a>
+      <a href="#how">Cách dùng</a>
+      <a href="#pricing">Bảng giá</a>
+    </div>
+    <div class="nav-cta">
+      <a href="/app" class="btn btn-outline">Đăng nhập</a>
+      <a href="/app?register=true" class="btn btn-primary">Dùng thử miễn phí →</a>
+    </div>
+  </div>
+</nav>
+
+<!-- HERO -->
+<section class="hero">
+  <div class="hero-inner">
+    <div class="hero-badge"><div class="dot"></div> Chatbot bán hàng thế hệ mới</div>
+    <h1>Tự động hóa<br><span class="cyan">bán hàng</span> &amp;<br><span class="purple">chăm sóc khách</span></h1>
+    <p class="hero-sub">Quản lý toàn bộ khách hàng, tự động trả lời tin nhắn Facebook &amp; Zalo, phân tích doanh số — tất cả trong 1 dashboard duy nhất.</p>
+    <div class="hero-cta">
+      <a href="/app?register=true" class="btn btn-primary btn-lg">🚀 Dùng thử miễn phí</a>
+      <a href="/app" class="btn btn-ghost btn-lg">Đăng nhập →</a>
+    </div>
+    <div class="hero-trust">
+      <span>✅ Miễn phí 100 khách hàng</span>
+      <span>✅ Không cần thẻ tín dụng</span>
+      <span>✅ Setup trong 5 phút</span>
+    </div>
+
+    <!-- Dashboard preview mockup -->
+    <div class="preview-wrap">
+      <div class="preview-glow"></div>
+      <div class="preview-box">
+        <div class="preview-bar">
+          <div class="preview-dot" style="background:#ef4444"></div>
+          <div class="preview-dot" style="background:#f59e0b"></div>
+          <div class="preview-dot" style="background:#10b981"></div>
+          <div class="preview-url">saleskit-pro.up.railway.app/app</div>
+        </div>
+        <div class="preview-screen">
+          <div class="preview-sidebar">
+            <div style="height:28px;background:linear-gradient(90deg,rgba(0,229,255,.2),transparent);border-radius:6px;margin-bottom:14px"></div>
+            <div class="preview-nav-item active"></div>
+            <div class="preview-nav-item" style="width:70%"></div>
+            <div class="preview-nav-item" style="width:85%"></div>
+            <div class="preview-nav-item" style="width:60%"></div>
+            <div style="height:1px;background:var(--border);margin:10px 0"></div>
+            <div class="preview-nav-item" style="width:90%"></div>
+            <div class="preview-nav-item" style="width:75%"></div>
+            <div class="preview-nav-item" style="width:80%"></div>
+          </div>
+          <div class="preview-content">
+            <div class="preview-stat"><div class="n" style="color:var(--cyan)">1,284</div><div class="l">Khách hàng</div></div>
+            <div class="preview-stat"><div class="n" style="color:var(--green)">347</div><div class="l">Đã chốt đơn</div></div>
+            <div class="preview-stat"><div class="n" style="color:var(--pink)">2,841</div><div class="l">Tin nhắn</div></div>
+            <div class="preview-stat"><div class="n" style="color:var(--amber)">27%</div><div class="l">Tỉ lệ chốt</div></div>
+            <div class="preview-chart">
+              <div class="bar" style="height:35%"></div>
+              <div class="bar" style="height:55%"></div>
+              <div class="bar" style="height:45%"></div>
+              <div class="bar" style="height:70%"></div>
+              <div class="bar" style="height:60%"></div>
+              <div class="bar" style="height:85%"></div>
+              <div class="bar" style="height:75%;background:rgba(0,229,255,.5);border-color:var(--cyan)"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- FEATURES -->
+<section id="features" style="padding:80px 5vw;background:var(--s1);border-top:1px solid var(--border);border-bottom:1px solid var(--border)">
+  <div class="section-inner">
+    <div style="text-align:center;margin-bottom:0">
+      <div class="section-badge">Tính năng</div>
+      <h2 class="section-title">Mọi thứ bạn cần để<br>bán hàng hiệu quả hơn</h2>
+      <p class="section-sub" style="margin:0 auto">Từ chatbot tự động đến CRM chuyên nghiệp, SalesKit Pro có tất cả.</p>
+    </div>
+    <div class="features-grid">
+      <div class="feat-card">
+        <div class="feat-icon" style="background:rgba(0,229,255,.1)">🤖</div>
+        <div class="feat-title">Chatbot AI tự động</div>
+        <p class="feat-desc">Tự động trả lời tin nhắn 24/7 theo quy tắc từ khóa hoặc AI (OpenAI / Gemini). Không bỏ lỡ khách nào.</p>
+      </div>
+      <div class="feat-card">
+        <div class="feat-icon" style="background:rgba(16,185,129,.1)">👥</div>
+        <div class="feat-title">CRM quản lý khách hàng</div>
+        <p class="feat-desc">Lưu trữ toàn bộ thông tin khách, phân loại theo trạng thái, giao việc cho nhân viên. Kanban board trực quan.</p>
+      </div>
+      <div class="feat-card">
+        <div class="feat-icon" style="background:rgba(124,58,237,.1)">📡</div>
+        <div class="feat-title">Kết nối Facebook & Zalo</div>
+        <p class="feat-desc">Nhận tin nhắn từ Facebook Messenger và Zalo OA vào 1 hộp thư chung. Quản lý tập trung, không bỏ sót.</p>
+      </div>
+      <div class="feat-card">
+        <div class="feat-icon" style="background:rgba(245,158,11,.1)">📊</div>
+        <div class="feat-title">Phân tích & Lead Scoring</div>
+        <p class="feat-desc">Phễu chuyển đổi trực quan, chấm điểm lead tự động theo tương tác, phân tích cảm xúc khách hàng.</p>
+      </div>
+      <div class="feat-card">
+        <div class="feat-icon" style="background:rgba(244,114,182,.1)">💳</div>
+        <div class="feat-title">Widget nhúng website</div>
+        <p class="feat-desc">Nhúng chatbot vào bất kỳ website nào chỉ với 1 dòng code. Đồng bộ real-time với dashboard.</p>
+      </div>
+      <div class="feat-card">
+        <div class="feat-icon" style="background:rgba(239,68,68,.1)">👨‍💼</div>
+        <div class="feat-title">Quản lý team</div>
+        <p class="feat-desc">Thêm nhân viên sales, chia khách hàng theo agent, theo dõi hiệu suất từng người — tất cả trong 1 nơi.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- HOW IT WORKS -->
+<section id="how">
+  <div class="section-inner">
+    <div style="text-align:center">
+      <div class="section-badge">Cách dùng</div>
+      <h2 class="section-title">Bắt đầu trong 5 phút</h2>
+      <p class="section-sub" style="margin:0 auto">Không cần cài đặt phức tạp. Đăng ký là dùng được ngay.</p>
+    </div>
+    <div class="steps">
+      <div class="step">
+        <div class="step-num">1</div>
+        <div class="step-title">Đăng ký tài khoản</div>
+        <p class="step-desc">Điền tên shop, username và mật khẩu. Shop của bạn được tạo ngay lập tức với gói Free.</p>
+      </div>
+      <div class="step">
+        <div class="step-num">2</div>
+        <div class="step-title">Cấu hình chatbot</div>
+        <p class="step-desc">Thêm sản phẩm, thiết lập các câu trả lời tự động theo từ khóa phù hợp với shop.</p>
+      </div>
+      <div class="step">
+        <div class="step-num">3</div>
+        <div class="step-title">Kết nối kênh bán hàng</div>
+        <p class="step-desc">Kết nối Facebook Page hoặc Zalo OA. Tin nhắn tự động chạy, bạn chỉ cần quản lý.</p>
+      </div>
+      <div class="step">
+        <div class="step-num">4</div>
+        <div class="step-title">Theo dõi & tối ưu</div>
+        <p class="step-desc">Xem dashboard theo dõi khách hàng, doanh số, tỉ lệ chốt — tối ưu liên tục.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- PRICING -->
+<section id="pricing" style="background:var(--s1);border-top:1px solid var(--border);border-bottom:1px solid var(--border)">
+  <div class="section-inner">
+    <div style="text-align:center">
+      <div class="section-badge">Bảng giá</div>
+      <h2 class="section-title">Giá cả minh bạch,<br>không phát sinh</h2>
+      <p class="section-sub" style="margin:0 auto">Bắt đầu miễn phí, nâng cấp khi cần. Thanh toán đơn giản qua chuyển khoản.</p>
+    </div>
+    <div class="pricing-grid">
+      <div class="price-card">
+        <div class="price-name">🌱 Free</div>
+        <div class="price-amount">0đ</div>
+        <div class="price-per">mãi mãi</div>
+        <ul class="price-features">
+          <li>100 khách hàng</li>
+          <li>10 sản phẩm</li>
+          <li>5 auto-reply rules</li>
+          <li>Dashboard đầy đủ</li>
+          <li>Widget nhúng web</li>
+        </ul>
+        <a href="/app?register=true" class="btn btn-ghost">Bắt đầu miễn phí</a>
+      </div>
+      <div class="price-card">
+        <div class="price-name">🚀 Basic</div>
+        <div class="price-amount">299.000đ <span>/tháng</span></div>
+        <div class="price-per">thanh toán hàng tháng</div>
+        <ul class="price-features">
+          <li>500 khách hàng</li>
+          <li>50 sản phẩm</li>
+          <li>30 auto-reply rules</li>
+          <li>Quản lý team</li>
+          <li>Lead scoring</li>
+        </ul>
+        <a href="/app?register=true" class="btn btn-ghost">Chọn Basic</a>
+      </div>
+      <div class="price-card popular">
+        <div class="price-popular-badge">⭐ PHỔ BIẾN NHẤT</div>
+        <div class="price-name">⚡ Pro</div>
+        <div class="price-amount">699.000đ <span>/tháng</span></div>
+        <div class="price-per">thanh toán hàng tháng</div>
+        <ul class="price-features">
+          <li>5.000 khách hàng</li>
+          <li>200 sản phẩm</li>
+          <li>100 auto-reply rules</li>
+          <li>Facebook + Zalo</li>
+          <li>AI chatbot (GPT/Gemini)</li>
+        </ul>
+        <a href="/app?register=true" class="btn btn-primary">Chọn Pro →</a>
+      </div>
+      <div class="price-card">
+        <div class="price-name">💎 Enterprise</div>
+        <div class="price-amount">1.999.000đ <span>/tháng</span></div>
+        <div class="price-per">thanh toán hàng tháng</div>
+        <ul class="price-features">
+          <li>Không giới hạn KH</li>
+          <li>Không giới hạn SP</li>
+          <li>Không giới hạn rules</li>
+          <li>Hỗ trợ 24/7</li>
+          <li>Tùy chỉnh theo yêu cầu</li>
+        </ul>
+        <a href="/app?register=true" class="btn btn-ghost">Liên hệ tư vấn</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- TESTIMONIALS -->
+<section>
+  <div class="section-inner">
+    <div style="text-align:center">
+      <div class="section-badge">Đánh giá</div>
+      <h2 class="section-title">Được tin dùng bởi<br>các shop trên cả nước</h2>
+    </div>
+    <div class="testimonials-grid">
+      <div class="testi-card">
+        <div class="testi-stars">★★★★★</div>
+        <p class="testi-text">"Trước đây mình phải trả lời thủ công từng tin nhắn, giờ bot tự xử lý 80% rồi. Khách hàng phản hồi nhanh hơn, doanh số tăng rõ rệt."</p>
+        <div class="testi-author">
+          <div class="testi-av">L</div>
+          <div>
+            <div class="testi-name">Nguyễn Thị Lan</div>
+            <div class="testi-shop">Shop Thời Trang Online</div>
+          </div>
+        </div>
+      </div>
+      <div class="testi-card">
+        <div class="testi-stars">★★★★★</div>
+        <p class="testi-text">"Dashboard rất đẹp và dễ dùng. Tôi thích nhất phần Kanban — có thể kéo thả khách hàng qua các giai đoạn rất trực quan."</p>
+        <div class="testi-author">
+          <div class="testi-av">M</div>
+          <div>
+            <div class="testi-name">Trần Văn Minh</div>
+            <div class="testi-shop">Cửa hàng điện tử</div>
+          </div>
+        </div>
+      </div>
+      <div class="testi-card">
+        <div class="testi-stars">★★★★★</div>
+        <p class="testi-text">"Tích hợp được với Facebook và Zalo cùng lúc, tất cả tin nhắn vào một chỗ. Tiết kiệm rất nhiều thời gian so với trước."</p>
+        <div class="testi-author">
+          <div class="testi-av">H</div>
+          <div>
+            <div class="testi-name">Lê Thị Hoa</div>
+            <div class="testi-shop">Shop mỹ phẩm handmade</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- CTA -->
+<div class="cta-section">
+  <div class="section-inner">
+    <h2 class="cta-title">Bắt đầu ngay hôm nay,<br>hoàn toàn <span style="color:var(--cyan)">miễn phí</span></h2>
+    <p class="cta-sub">Không cần thẻ tín dụng. Không cần cài đặt. Dùng được ngay sau 5 phút.</p>
+    <div class="cta-btns">
+      <a href="/app?register=true" class="btn btn-primary btn-lg">🚀 Tạo tài khoản miễn phí</a>
+      <a href="/app" class="btn btn-ghost btn-lg">Đăng nhập</a>
+    </div>
+  </div>
+</div>
+
+<!-- FOOTER -->
+<footer>
+  <div class="footer-inner">
+    <div class="nav-logo" style="display:flex;align-items:center;gap:8px">
+      <div class="dot"></div>
+      <span class="footer-logo">SalesKit Pro</span>
+    </div>
+    <div class="footer-links">
+      <a href="#features">Tính năng</a>
+      <a href="#pricing">Bảng giá</a>
+      <a href="/app">Đăng nhập</a>
+      <a href="/app?register=true">Đăng ký</a>
+    </div>
+    <div class="footer-copy">© 2026 SalesKit Pro. All rights reserved.</div>
+  </div>
+</footer>
+
+<script>
+// Smooth active nav on scroll
+const sections = document.querySelectorAll('section[id]');
+window.addEventListener('scroll', () => {
+  const y = window.scrollY + 100;
+  sections.forEach(s => {
+    const a = document.querySelector(`nav a[href="#${s.id}"]`);
+    if (a) a.style.color = (y >= s.offsetTop && y < s.offsetTop + s.offsetHeight) ? 'var(--text)' : '';
+  });
+});
+</script>
+</body>
+</html>
